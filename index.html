@@ -101,7 +101,7 @@ const DEF={'Polo':20,'T-Shirt / Camisa':14,'Gorra':15,'Jersey Femenino':14,'Jers
 const FABRICS=['Dri-Fit','Sublimación','Algodón','Poliéster','Spandex','Mesh/Malla','French Terry','Lycra','Nylon','Otro'];
 const SPORTS=['Basketball','Fútbol','Volleyball','Baseball','Softball','Tenis','Track & Field','Natación','Ciclismo','Otro'];
 const COLLARS=['Redondo','Cuello V','Polo/Botones','Cuello alto','Otro'];
-const AUDIENCES=['Hombre','Mujer','Niños'];
+const AUDIENCES=['Hombre','Mujer','Niños','Unisex'];
 const STATUSES=[
   {key:'enviada',  label:'Enviada a cliente', c:'var(--accent)', bg:'var(--accent-soft)'},
   {key:'aceptada', label:'Aceptada',          c:'var(--violet)', bg:'var(--violet-soft)'},
@@ -110,6 +110,14 @@ const STATUSES=[
   {key:'saldo',    label:'Saldo cobrado',     c:'var(--fg)',     bg:'var(--surface-2)'},
 ];
 const stat=k=>STATUSES.find(s=>s.key===k)||STATUSES[0];
+const OSTATUSES=[
+  {key:'pendiente', label:'Pendiente',   c:'var(--muted)',  bg:'var(--surface-2)'},
+  {key:'fabrica',   label:'En fábrica',  c:'var(--warn)',   bg:'var(--warn-soft)'},
+  {key:'transito',  label:'En tránsito', c:'var(--violet)', bg:'var(--violet-soft)'},
+  {key:'recibida',  label:'Recibida',    c:'var(--accent)', bg:'var(--accent-soft)'},
+  {key:'entregada', label:'Entregada',   c:'var(--ok)',     bg:'var(--ok-soft)'},
+];
+const ostat=k=>OSTATUSES.find(s=>s.key===k)||OSTATUSES[0];
 
 /* ══════════ UTILIDADES ══════════ */
 let _n=0; const uid=()=>++_n;
@@ -117,14 +125,54 @@ const qid=()=>'Q'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const today=()=>new Date().toISOString().split('T')[0];
 const fmt=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const rf=(f,cb)=>{const r=new FileReader();r.onload=e=>cb(e.target.result);r.readAsDataURL(f);};
-const qtyOf=i=>SIZES.reduce((s,z)=>s+(Number(i[z.toLowerCase()])||0),0);
+/* Reduce la foto antes de enviarla: un celular manda 8MB y el backend se cae. */
+const shrink=(file,cb)=>{
+  rf(file,src=>{
+    const img=new Image();
+    img.onload=()=>{
+      const MAX=1400;
+      const s=Math.min(1,MAX/Math.max(img.width,img.height));
+      if(s===1&&src.length<700000){cb(src);return;}
+      const c=document.createElement('canvas');
+      c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
+      ctx.drawImage(img,0,0,c.width,c.height);
+      try{cb(c.toDataURL('image/jpeg',0.85));}catch(e){cb(src);}
+    };
+    img.onerror=()=>cb(src);
+    img.src=src;
+  });
+};
+const sumSizes=o=>SIZES.reduce((s,z)=>s+(Number((o||{})[z.toLowerCase()])||0),0);
+const emptySizes=()=>({xs:0,s:0,m:0,l:0,xl:0,xxl:0});
+const qtyOf=i=>{
+  if(!i)return 0;
+  if(i.sizes)return (i.audience||[]).reduce((s,a)=>s+sumSizes(i.sizes[a]),0);
+  return sumSizes(i);
+};
+/* Un artículo con varias audiencias se convierte en una fila por audiencia. */
+const flatItems=items=>(items||[]).reduce((out,it)=>{
+  if(!it.sizes){out.push(it);return out;}
+  const auds=(it.audience&&it.audience.length)?it.audience:['Sin especificar'];
+  auds.forEach((a,ai)=>{
+    const row=Object.assign({},it,it.sizes[a]||emptySizes(),{
+      id:String(it.id)+'-'+a, audience:a,
+      model:(it.models||{})[a]||'',
+      roster:(it.roster||[]).filter(r=>r.aud===a),
+      images:ai===0?(it.images||[]):[],
+      notes:ai===0?(it.notes||''):''
+    });
+    delete row.sizes; delete row.models;
+    out.push(row);
+  });
+  return out;
+},[]);
 const grandOf=items=>items.reduce((s,i)=>s+qtyOf(i)*(Number(i.price)||0),0);
 const dLong=d=>d?new Date(d+'T12:00:00').toLocaleDateString('es-PR',{year:'numeric',month:'long',day:'numeric'}):'—';
 const dShort=d=>d?new Date(d+'T12:00:00').toLocaleDateString('es-PR',{month:'short',day:'numeric',year:'numeric'}):'—';
-const nextNum=()=>{
-  let n=1; try{n=Number(localStorage.getItem('ae_seq')||'0')+1;localStorage.setItem('ae_seq',String(n));}catch(e){n=Date.now()%900+100;}
-  return 'COT-'+new Date().getFullYear()+'-'+String(n).padStart(3,'0');
-};
+const audText=it=>Array.isArray(it.audience)?(it.audience.join(', ')||'—'):(it.audience||'—');
+const nextNum=()=>'Se asigna al enviar';
 
 /* ══════════ BACKEND ══════════ */
 const post=async p=>{
@@ -139,9 +187,28 @@ const lsLoad=()=>{try{return JSON.parse(localStorage.getItem(LS)||'[]');}catch(e
 const lsSave=d=>{try{localStorage.setItem(LS,JSON.stringify(d));}catch(e){}};
 
 /* ══════════ MODELOS ══════════ */
-const newItem=()=>({id:uid(),name:'Polo',price:20,xs:0,s:0,m:0,l:0,xl:0,xxl:0,fabric:'Dri-Fit',material:'',audience:'Hombre',collar:'',reversible:false,isSport:false,sport:'Basketball',images:[]});
-const newOI=()=>({id:uid(),garment:'Polo',color:'',fabric:'Dri-Fit',xs:0,s:0,m:0,l:0,xl:0,xxl:0,productImg:null,logo:null,placement:'Frente pecho izquierdo',placementSize:'5 cm',notes:''});
-const newOrd=()=>{const n=uid();return{id:n,orderNum:'ORD-'+new Date().getFullYear()+'-'+String(n).padStart(3,'0'),client:'',date:today(),deliveryDate:'',items:[newOI()],notes:''};};
+const newItem=()=>({id:uid(),name:'Polo',price:20,sizes:{Hombre:emptySizes()},fabric:'Dri-Fit',material:'',color:'',audience:['Hombre'],collar:'',reversible:false,isSport:false,sport:'Basketball',notes:'',roster:[],images:[]});
+const newOI=()=>({id:uid(),garment:'Polo',color:'',fabric:'Dri-Fit',xs:0,s:0,m:0,l:0,xl:0,xxl:0,productImg:null,logo:null,placement:'Frente pecho izquierdo',placementSize:'5 cm',notes:'',roster:[]});
+const newOrd=()=>{const n=Date.now()%10000;return{id:qid(),orderNum:'ORD-'+new Date().getFullYear()+'-'+String(n).slice(-4),client:'',quoteNum:'',date:today(),deliveryDate:'',status:'pendiente',items:[newOI()],notes:''};};
+
+/* Convierte una cotización aceptada en ficha de producción. */
+const orderFromQuote=q=>({
+  id:qid(),
+  orderNum:'ORD-'+new Date().getFullYear()+'-'+String(q.quoteNum||'').replace(/\D/g,'').slice(-3),
+  client:q.client||'', quoteNum:q.quoteNum||'',
+  date:today(), deliveryDate:q.deliveryDate||'', status:'pendiente',
+  notes:[q.needBy?'Para cuándo: '+q.needBy:'',q.notes||''].filter(Boolean).join('\n'),
+  items:flatItems(q.items).map(it=>Object.assign({},emptySizes(),{
+    id:uid(),
+    garment:it.name+(it.audience?' — '+it.audience:'')+(it.model?' ('+it.model+')':''),
+    color:it.color||'', fabric:it.fabric||'',
+    xs:it.xs||0,s:it.s||0,m:it.m||0,l:it.l||0,xl:it.xl||0,xxl:it.xxl||0,
+    productImg:null, logo:null,
+    placement:'Frente pecho izquierdo', placementSize:'5 cm',
+    notes:[it.notes||'',it.collar?'Cuello: '+it.collar:'',it.material||''].filter(Boolean).join(' · '),
+    roster:it.roster||[]
+  }))
+});
 
 /* ══════════ PIEZAS DE UI ══════════ */
 const Card=({children,style})=><div className="card" style={style}>{children}</div>;
@@ -166,7 +233,7 @@ function ImgOne({value,onChange,label}){
       :<div className="drop" style={{height:98,flexDirection:'column',gap:4,cursor:'pointer'}} onClick={()=>ref.current&&ref.current.click()}>
         <span style={{fontSize:19,lineHeight:1}}>+</span><span>Subir imagen</span>
       </div>}
-    <input ref={ref} type="file" accept="image/*" hidden onChange={e=>{const f=e.target.files[0];if(f)rf(f,onChange);e.target.value='';}}/>
+    <input ref={ref} type="file" accept="image/*" hidden onChange={e=>{const f=e.target.files[0];if(f)shrink(f,onChange);e.target.value='';}}/>
   </div>;
 }
 
@@ -179,7 +246,7 @@ function ImgMany({images,onChange}){
     </div>
     <input ref={ref} type="file" accept="image/*" multiple hidden
       onChange={e=>{const fs=Array.from(e.target.files);let acc=images.slice();
-        fs.forEach(f=>rf(f,src=>{acc=acc.concat([{id:uid(),src,label:''}]);onChange(acc);}));e.target.value='';}}/>
+        fs.forEach(f=>shrink(f,src=>{acc=acc.concat([{id:uid(),src,label:''}]);onChange(acc);}));e.target.value='';}}/>
     {images.length===0
       ?<div className="drop" style={{padding:16,cursor:'pointer'}} onClick={()=>ref.current&&ref.current.click()}>
         Sube tu arte, logos o fotos de referencia. Puedes escoger varios a la vez.
@@ -198,18 +265,58 @@ function ImgMany({images,onChange}){
   </div>;
 }
 
-function SizeRow({item,onSet,total}){
+function SizeRow({vals,onSet,total,idKey}){
   return <div className="row-wrap">
     {SIZES.map(z=><div key={z} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
-      <label htmlFor={'sz'+item.id+z} style={{fontSize:11,fontWeight:600,color:'var(--muted)'}}>{z}</label>
-      <input id={'sz'+item.id+z} className="num" type="number" min="0" value={item[z.toLowerCase()]}
+      <label htmlFor={'sz'+idKey+z} style={{fontSize:11,fontWeight:600,color:'var(--muted)'}}>{z}</label>
+      <input id={'sz'+idKey+z} className="num" type="number" min="0" value={(vals||{})[z.toLowerCase()]||0}
         onChange={e=>onSet(z.toLowerCase(),e.target.value)} style={{width:54,textAlign:'center'}}/>
     </div>)}
     <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
       <span style={{fontSize:11,fontWeight:600,color:'var(--muted)'}}>TOTAL</span>
-      <span className="num display" style={{width:54,height:35,display:'grid',placeItems:'center',fontWeight:700,fontSize:16,color:'var(--accent)'}}>{qtyOf(item)}</span>
+      <span className="num display" style={{width:54,height:35,display:'grid',placeItems:'center',fontWeight:700,fontSize:16,color:'var(--accent)'}}>{sumSizes(vals)}</span>
     </div>
-    <span className="num" style={{fontSize:14,fontWeight:600,color:'var(--accent)',paddingBottom:8}}>{fmt(total)}</span>
+    {typeof total==='number'&&<span className="num" style={{fontSize:14,fontWeight:600,color:'var(--accent)',paddingBottom:8}}>{fmt(total)}</span>}
+  </div>;
+}
+
+/* Lista de nombres y números para uniformes deportivos. */
+function Roster({item,onChange}){
+  const rows=item.roster||[];
+  const auds=item.audience||[];
+  const set=(id,f,v)=>onChange(rows.map(r=>r.id===id?Object.assign({},r,{[f]:v}):r));
+  const add=()=>onChange(rows.concat([{id:uid(),num:'',name:'',size:'m',aud:auds[0]||'Unisex'}]));
+  const pcs=qtyOf(item);
+  return <div style={{borderTop:'1px solid var(--line)',paddingTop:13}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+      <div className="lbl" style={{margin:0}}>
+        Nombres y números {rows.length>0&&<span style={{color:pcs&&rows.length!==pcs?'var(--warn)':'var(--muted)'}}>
+          · {rows.length} de {pcs} piezas</span>}
+      </div>
+      <Btn cls="btn-accent" style={{padding:'4px 10px',fontSize:12}} onClick={add}>+ Añadir jugador</Btn>
+    </div>
+    {rows.length===0
+      ?<div className="drop" style={{padding:12,fontSize:12,cursor:'pointer'}} onClick={add}>
+        Opcional. Úsalo si cada pieza lleva un nombre o número distinto.</div>
+      :<div className="grid" style={{gap:6}}>
+        {rows.map((r,i)=><div key={r.id} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+          <span className="num" style={{fontSize:11,color:'var(--muted)',width:20,textAlign:'right'}}>{i+1}</span>
+          <input className="num" value={r.num} onChange={e=>set(r.id,'num',e.target.value)}
+            placeholder="#" style={{width:56,textAlign:'center'}} aria-label="Número"/>
+          <input value={r.name} onChange={e=>set(r.id,'name',e.target.value)}
+            placeholder="Nombre" style={{flex:'1 1 130px',minWidth:0}} aria-label="Nombre"/>
+          <select value={r.size} onChange={e=>set(r.id,'size',e.target.value)} style={{width:78}} aria-label="Talla">
+            {SIZES.map(z=><option key={z} value={z.toLowerCase()}>{z}</option>)}
+          </select>
+          {auds.length>1&&<select value={r.aud} onChange={e=>set(r.id,'aud',e.target.value)} style={{width:100}} aria-label="Corte">
+            {auds.map(a=><option key={a}>{a}</option>)}
+          </select>}
+          <button onClick={()=>onChange(rows.filter(x=>x.id!==r.id))}
+            style={{background:'none',border:'none',color:'var(--muted)',fontSize:16,padding:'0 4px'}} aria-label="Quitar">×</button>
+        </div>)}
+        {pcs>0&&rows.length!==pcs&&<p style={{fontSize:11,color:'var(--warn)',marginTop:2}}>
+          La lista no cuadra con las cantidades por talla. Revísala antes de enviar.</p>}
+      </div>}
   </div>;
 }
 
@@ -219,17 +326,34 @@ function dl(html,name){
   const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-function quoteDoc(q){
-  const rows=q.items.map((it,i)=>'<tr style="background:'+(i%2?'#f7f8fa':'#fff')+'">'+
-    '<td style="padding:7px 10px;border:1px solid #e1e5ec;font-weight:600">'+it.name+'</td>'+
+function quoteDoc(q,prices){
+  const items=flatItems(q.items);
+  const rows=items.map((it,i)=>'<tr style="background:'+(i%2?'#f7f8fa':'#fff')+'">'+
+    '<td style="padding:7px 10px;border:1px solid #e1e5ec;font-weight:600">'+it.name+
+    (it.model?'<div style="font-weight:400;font-size:9pt;color:#606a79">'+it.model+'</div>':'')+'</td>'+
     '<td style="padding:7px 6px;border:1px solid #e1e5ec;text-align:center">'+(it.fabric||'—')+'</td>'+
-    '<td style="padding:7px 6px;border:1px solid #e1e5ec;text-align:center">'+(it.audience||'—')+'</td>'+
+    '<td style="padding:7px 6px;border:1px solid #e1e5ec;text-align:center">'+audText(it)+'</td>'+
     '<td style="padding:7px 6px;border:1px solid #e1e5ec;text-align:center">'+(it.collar||'—')+'</td>'+
     SIZES.map(z=>'<td style="padding:7px 5px;border:1px solid #e1e5ec;text-align:center">'+(Number(it[z.toLowerCase()])||'—')+'</td>').join('')+
     '<td style="padding:7px 8px;border:1px solid #e1e5ec;text-align:center;font-weight:600">'+qtyOf(it)+'</td>'+
-    '<td style="padding:7px 8px;border:1px solid #e1e5ec;text-align:center">'+fmt(it.price)+'</td>'+
-    '<td style="padding:7px 10px;border:1px solid #e1e5ec;text-align:right;font-weight:700;color:#1f56d3">'+fmt(qtyOf(it)*(Number(it.price)||0))+'</td></tr>').join('');
-  const imgs=q.items.reduce((a,it)=>a.concat((it.images||[]).map(im=>
+    (prices?'<td style="padding:7px 8px;border:1px solid #e1e5ec;text-align:center">'+fmt(it.price)+'</td>'+
+    '<td style="padding:7px 10px;border:1px solid #e1e5ec;text-align:right;font-weight:700;color:#1f56d3">'+fmt(qtyOf(it)*(Number(it.price)||0))+'</td>':'')+
+    '</tr>').join('');
+  const notes=items.filter(it=>it.notes).map(it=>
+    '<div style="margin-bottom:5px;font-size:10pt"><b>'+it.name+':</b> '+it.notes+'</div>').join('');
+  const rosters=items.filter(it=>(it.roster||[]).length>0).map(it=>
+    '<div style="margin-bottom:12px"><div style="font-size:10pt;font-weight:bold;margin-bottom:4px">'+
+    it.name+' · '+it.audience+' — '+it.roster.length+' jugadores</div>'+
+    '<table style="border-collapse:collapse;width:auto;font-size:10pt"><thead><tr>'+
+    '<th style="background:#1b3552;color:#fff;padding:5px 9px">#</th>'+
+    '<th style="background:#1b3552;color:#fff;padding:5px 9px;text-align:left">Nombre</th>'+
+    '<th style="background:#1b3552;color:#fff;padding:5px 9px">Talla</th></tr></thead><tbody>'+
+    it.roster.map((r,i)=>'<tr style="background:'+(i%2?'#f7f8fa':'#fff')+'">'+
+      '<td style="padding:4px 9px;border:1px solid #e1e5ec;text-align:center">'+(r.num||'')+'</td>'+
+      '<td style="padding:4px 9px;border:1px solid #e1e5ec">'+(r.name||'')+'</td>'+
+      '<td style="padding:4px 9px;border:1px solid #e1e5ec;text-align:center">'+String(r.size||'').toUpperCase()+'</td></tr>').join('')+
+    '</tbody></table></div>').join('');
+  const imgs=items.reduce((a,it)=>a.concat((it.images||[]).map(im=>
     '<div style="display:inline-block;margin:5px;text-align:center;vertical-align:top">'+
     '<img src="'+im.src+'" style="height:96px;border:1px solid #e1e5ec;border-radius:6px;display:block"/>'+
     '<div style="font-size:9pt;color:#606a79;margin-top:3px">'+(im.label||it.name)+'</div></div>')),[]).join('');
@@ -244,16 +368,26 @@ function quoteDoc(q){
   '<table style="width:auto;margin-bottom:16px">'+
   '<tr><td style="font-size:9pt;color:#606a79;padding-right:22px">Preparado para</td><td style="font-size:13pt;font-weight:bold">'+(q.client||'—')+'</td></tr>'+
   '<tr><td style="font-size:9pt;color:#606a79;padding-right:22px">Contacto</td><td style="font-size:10pt">'+(q.email||'—')+(q.phone?' · '+q.phone:'')+'</td></tr>'+
-  '<tr><td style="font-size:9pt;color:#606a79;padding-right:22px">Fecha de entrega</td><td style="font-size:11pt">'+dLong(q.deliveryDate)+'</td></tr></table>'+
+  '<tr><td style="font-size:9pt;color:#606a79;padding-right:22px">Fecha de entrega</td><td style="font-size:11pt">'+dLong(q.deliveryDate)+
+  (q.needBy?' — '+q.needBy:'')+'</td></tr></table>'+
   '<table style="margin-bottom:16px"><thead><tr><th style="text-align:left;padding-left:10px">Artículo</th><th>Tela</th><th>Audiencia</th><th>Cuello</th>'+
-  SIZES.map(z=>'<th>'+z+'</th>').join('')+'<th>Cant.</th><th>P.U.</th><th style="text-align:right;padding-right:10px">Total</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+  SIZES.map(z=>'<th>'+z+'</th>').join('')+'<th>Cant.</th>'+
+  (prices?'<th>P.U.</th><th style="text-align:right;padding-right:10px">Total</th>':'')+
+  '</tr></thead><tbody>'+rows+'</tbody></table>'+
+  (notes?'<div style="margin-bottom:16px"><div style="font-size:9pt;font-weight:bold;color:#606a79;letter-spacing:1px;margin-bottom:6px">DETALLES DE CADA PIEZA</div>'+notes+'</div>':'')+
+  (rosters?'<div style="margin-bottom:16px"><div style="font-size:9pt;font-weight:bold;color:#606a79;letter-spacing:1px;margin-bottom:6px">NOMBRES Y NÚMEROS</div>'+rosters+'</div>':'')+
+  (q.notes?'<div style="margin-bottom:16px"><div style="font-size:9pt;font-weight:bold;color:#606a79;letter-spacing:1px;margin-bottom:6px">COMENTARIOS GENERALES</div>'+
+  '<div style="font-size:10pt">'+q.notes+'</div></div>':'')+
   '<table style="width:270px;margin-left:auto;margin-bottom:20px">'+
   '<tr><td style="padding:5px 10px;color:#606a79;font-size:10pt">Total de piezas</td><td style="text-align:right;font-weight:600">'+q.items.reduce((s,i)=>s+qtyOf(i),0)+'</td></tr>'+
-  '<tr><td style="padding:9px 10px;font-size:12pt;font-weight:bold;border-top:1px solid #e1e5ec">Total general</td>'+
-  '<td style="text-align:right;font-size:14pt;font-weight:bold;color:#1f56d3;border-top:1px solid #e1e5ec">'+fmt(grandOf(q.items))+'</td></tr></table>'+
+  (prices?'<tr><td style="padding:9px 10px;font-size:12pt;font-weight:bold;border-top:1px solid #e1e5ec">Total general</td>'+
+  '<td style="text-align:right;font-size:14pt;font-weight:bold;color:#1f56d3;border-top:1px solid #e1e5ec">'+fmt(grandOf(q.items))+'</td></tr>':'')+
+  '</table>'+
   (imgs?'<div style="margin-bottom:16px"><div style="font-size:9pt;font-weight:bold;color:#606a79;letter-spacing:1px;margin-bottom:6px">DISEÑOS Y LOGOS</div>'+imgs+'</div>':'')+
   '<div style="background:#f7f8fa;padding:10px 12px;border-radius:6px;font-size:9pt;color:#606a79">'+
-  '<b>Condiciones:</b> Precios por unidad · Cotización válida 30 días · No incluye IVU</div></body></html>';
+  (prices?'<b>Condiciones:</b> Precios por unidad · Cotización válida 30 días · No incluye IVU'
+         :'<b>Nota:</b> Esta es una solicitud de cotización, no una factura. Los costos finales se envían por separado.')+
+  '</div></body></html>';
   dl(html,'Cotizacion_'+q.quoteNum+'.doc');
 }
 function orderDoc(o){
@@ -298,9 +432,13 @@ function QuoteForm({q,setQ,setItem,addItem,delItem,onPreview,onExport,admin}){
         <Field label="Cliente u organización *"><input id="f-client" value={q.client} onChange={e=>set('client',e.target.value)} placeholder="Escuela, liga o empresa"/></Field>
         <Field label="Correo electrónico *"><input id="f-email" type="email" value={q.email} onChange={e=>set('email',e.target.value)} placeholder="tucorreo@ejemplo.com"/></Field>
         <Field label="Teléfono"><input id="f-phone" value={q.phone} onChange={e=>set('phone',e.target.value)} placeholder="787-000-0000"/></Field>
-        {admin&&<Field label="No. cotización"><input id="f-num" value={q.quoteNum} onChange={e=>set('quoteNum',e.target.value)}/></Field>}
         <Field label="Fecha"><input id="f-date" type="date" value={q.date} onChange={e=>set('date',e.target.value)}/></Field>
-        <Field label="Entrega deseada"><input id="f-dd" type="date" value={q.deliveryDate} onChange={e=>set('deliveryDate',e.target.value)}/></Field>
+        <Field label="Fecha límite"><input id="f-dd" type="date" value={q.deliveryDate} onChange={e=>set('deliveryDate',e.target.value)}/></Field>
+      </div>
+      <div style={{marginTop:10}}>
+        <label className="lbl" htmlFor="f-when">¿Para cuándo necesitas la orden?</label>
+        <input id="f-when" value={q.needBy||''} onChange={e=>set('needBy',e.target.value)}
+          placeholder="Ej: para el torneo del 15 de noviembre, antes del inicio de clases, no hay prisa"/>
       </div>
     </Card>
 
@@ -318,17 +456,15 @@ function QuoteForm({q,setQ,setItem,addItem,delItem,onPreview,onExport,admin}){
               {CATALOG.map(c=><option key={c}>{c}</option>)}
             </select>
           </Field>
-          <Field label="Precio unidad">
-            {admin
-              ?<input className="num" type="number" value={item.price} onChange={e=>si('price',e.target.value)} style={{textAlign:'center'}}/>
-              :<div className="num" style={{padding:'7px 9px',background:'var(--surface-2)',border:'1px solid var(--line)',borderRadius:'var(--r-sm)',fontWeight:600,color:'var(--accent)',textAlign:'center'}}>{fmt(item.price)}</div>}
-          </Field>
+          {admin&&<Field label="Precio unidad">
+            <input className="num" type="number" value={item.price} onChange={e=>si('price',e.target.value)} style={{textAlign:'center'}}/>
+          </Field>}
           <Field label="Tela"><select value={item.fabric} onChange={e=>si('fabric',e.target.value)}>{FABRICS.map(f=><option key={f}>{f}</option>)}</select></Field>
+          <Field label="Colores"><input value={item.color||''} onChange={e=>si('color',e.target.value)} placeholder="Ej: azul marino y blanco"/></Field>
           <Field label="Material o detalle"><input value={item.material} onChange={e=>si('material',e.target.value)} placeholder="Ej: 100% poliéster"/></Field>
         </div>
 
-        <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',marginBottom:11}}>
-          <Field label="Audiencia"><select value={item.audience} onChange={e=>si('audience',e.target.value)}>{AUDIENCES.map(a=><option key={a}>{a}</option>)}</select></Field>
+        <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',marginBottom:13}}>
           <Field label="Tipo de cuello">
             <select value={item.collar} onChange={e=>si('collar',e.target.value)}>
               <option value="">No aplica</option>
@@ -349,33 +485,80 @@ function QuoteForm({q,setQ,setItem,addItem,delItem,onPreview,onExport,admin}){
         </div>
 
         <div style={{marginBottom:14}}>
-          <div className="lbl">Cantidades por talla</div>
-          <SizeRow item={item} onSet={si} total={qtyOf(item)*(Number(item.price)||0)}/>
+          <div className="lbl">Corte y cantidades · marca los que necesites</div>
+          <div style={{display:'flex',gap:14,flexWrap:'wrap',marginBottom:10}}>
+            {AUDIENCES.map(a=>{
+              const on=(item.audience||[]).indexOf(a)>=0;
+              return <label key={a} style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}>
+                <input type="checkbox" checked={on} onChange={()=>{
+                  if(on){si('audience',(item.audience||[]).filter(x=>x!==a));}
+                  else{
+                    si('audience',(item.audience||[]).concat([a]));
+                    if(!(item.sizes||{})[a])setItem(item.id,'sizes',Object.assign({},item.sizes,{[a]:emptySizes()}));
+                  }
+                }}/>{a}</label>;
+            })}
+          </div>
+
+          {(item.audience||[]).length===0
+            ?<div className="drop" style={{padding:13,fontSize:12.5}}>Marca al menos un corte para poner las cantidades.</div>
+            :<div className="grid" style={{gap:10}}>
+              {(item.audience||[]).map(a=>{
+                const vals=(item.sizes||{})[a]||emptySizes();
+                return <div key={a} style={{background:'var(--surface-2)',borderRadius:'var(--r-sm)',padding:'10px 12px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:7,flexWrap:'wrap'}}>
+                    <span className="display" style={{fontSize:12,fontWeight:700,letterSpacing:'.06em',textTransform:'uppercase',color:'var(--accent)'}}>{a}</span>
+                    {admin&&sumSizes(vals)>0&&<span className="num" style={{fontSize:12.5,fontWeight:600,color:'var(--accent)'}}>{fmt(sumSizes(vals)*(Number(item.price)||0))}</span>}
+                  </div>
+                  <SizeRow idKey={String(item.id)+a} vals={vals} total={null}
+                    onSet={(k,v)=>setItem(item.id,'sizes',Object.assign({},item.sizes,{[a]:Object.assign({},vals,{[k]:v})}))}/>
+                  <input value={(item.models||{})[a]||''} placeholder={'Modelo o corte para '+a.toLowerCase()+' (ej: corte entallado, manga larga)'}
+                    onChange={e=>setItem(item.id,'models',Object.assign({},item.models,{[a]:e.target.value}))}
+                    style={{marginTop:8,fontSize:12}}/>
+                </div>;
+              })}
+            </div>}
+        </div>
+
+        <div style={{marginBottom:14}}>
+          <label className="lbl" htmlFor={'n'+item.id}>Describe esta pieza</label>
+          <textarea id={'n'+item.id} rows="2" value={item.notes||''} onChange={e=>si('notes',e.target.value)}
+            style={{resize:'vertical'}}
+            placeholder="Colores, para qué equipo o evento es, números o nombres al dorso, detalles del diseño…"/>
         </div>
 
         <div style={{borderTop:'1px solid var(--line)',paddingTop:13}}>
           <ImgMany images={item.images||[]} onChange={v=>si('images',v)}/>
         </div>
+
+        <Roster item={item} onChange={v=>si('roster',v)}/>
       </Card>;
     })}
 
     <button onClick={addItem} className="drop" style={{padding:11,fontSize:12.5,fontWeight:500,cursor:'pointer',width:'100%'}}>+ Agregar otro artículo</button>
+
+    <Card>
+      <label className="lbl" htmlFor="f-notes">Comentarios generales</label>
+      <textarea id="f-notes" rows="3" value={q.notes||''} onChange={e=>set('notes',e.target.value)} style={{resize:'vertical'}}
+        placeholder="¿Para qué es el pedido? Fecha del evento, equipo o escuela, colores de la institución, cualquier cosa que debamos saber."/>
+    </Card>
 
     <div style={{display:'flex',justifyContent:'flex-end'}}>
       <Card style={{minWidth:215}}>
         {[['Artículos',q.items.length],['Piezas',q.items.reduce((s,i)=>s+qtyOf(i),0)]].map(r=>
           <div key={r[0]} style={{display:'flex',justifyContent:'space-between',gap:36,fontSize:12.5,color:'var(--muted)',marginBottom:6}}>
             <span>{r[0]}</span><span className="num" style={{fontWeight:600,color:'var(--fg)'}}>{r[1]}</span></div>)}
-        <div style={{borderTop:'1px solid var(--line)',paddingTop:9,display:'flex',justifyContent:'space-between',gap:36,alignItems:'baseline'}}>
+        {admin&&<div style={{borderTop:'1px solid var(--line)',paddingTop:9,display:'flex',justifyContent:'space-between',gap:36,alignItems:'baseline'}}>
           <span style={{fontWeight:600}}>Total</span>
-          <span className="num display" style={{color:'var(--accent)',fontSize:19,fontWeight:700}}>{fmt(grandOf(q.items))}</span></div>
+          <span className="num display" style={{color:'var(--accent)',fontSize:19,fontWeight:700}}>{fmt(grandOf(q.items))}</span></div>}
       </Card>
     </div>
   </div>;
 }
 
 /* ══════════ PREVIEW ══════════ */
-function QuoteView({q,onBack,onExport,onSubmit,state,readOnly}){
+function QuoteView({q,onBack,onExport,onSubmit,state,readOnly,prices,onPrice,children}){
+  const rows=flatItems(q.items);
   const imgs=q.items.reduce((a,i)=>a.concat((i.images||[]).map(im=>Object.assign({},im,{from:i.name}))),[]);
   const label=state==='sending'?'Enviando…':state==='sent'?'Cotización sometida':'Someter cotización';
   return <div className="grid" style={{gap:12}}>
@@ -408,57 +591,160 @@ function QuoteView({q,onBack,onExport,onSubmit,state,readOnly}){
       <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',padding:'14px 0'}}>
         <div><div className="lbl">Preparado para</div><div style={{fontSize:15,fontWeight:600}}>{q.client||'—'}</div></div>
         <div><div className="lbl">Contacto</div><div style={{fontSize:12.5}}>{q.email||'—'}{q.phone?' · '+q.phone:''}</div></div>
-        <div><div className="lbl">Entrega</div><div className="num" style={{fontSize:14,fontWeight:600,color:'var(--accent)'}}>{dLong(q.deliveryDate)}</div></div>
+        <div><div className="lbl">Entrega</div><div className="num" style={{fontSize:14,fontWeight:600,color:'var(--accent)'}}>{dLong(q.deliveryDate)}</div>
+          {q.needBy&&<div style={{fontSize:11.5,color:'var(--muted)',marginTop:2}}>{q.needBy}</div>}</div>
       </div>
 
       <div className="tbl-scroll">
         <table>
           <thead><tr>
-            <th style={{textAlign:'left'}}>Artículo</th><th>Tela</th><th>Audiencia</th><th>Cuello</th>
-            {SIZES.map(z=><th key={z}>{z}</th>)}<th>Cant.</th><th>P.U.</th><th style={{textAlign:'right'}}>Total</th>
+            <th style={{textAlign:'left'}}>Artículo</th><th>Tela</th><th>Corte</th><th>Color</th><th>Cuello</th>
+            {SIZES.map(z=><th key={z}>{z}</th>)}<th>Cant.</th>
+            {prices&&<th>P.U.</th>}{prices&&<th style={{textAlign:'right'}}>Total</th>}
           </tr></thead>
-          <tbody>{q.items.map(it=>
+          <tbody>{rows.map(it=>
             <tr key={it.id}>
               <td style={{fontWeight:600,whiteSpace:'nowrap'}}>{it.name}
                 {it.reversible&&<span className="pill" style={{background:'var(--accent-soft)',color:'var(--accent)',marginLeft:6}}>REV</span>}
-                {it.isSport&&<span className="pill" style={{background:'var(--violet-soft)',color:'var(--violet)',marginLeft:4}}>{it.sport}</span>}</td>
+                {it.isSport&&<span className="pill" style={{background:'var(--violet-soft)',color:'var(--violet)',marginLeft:4}}>{it.sport}</span>}
+                {it.model&&<div style={{fontWeight:400,fontSize:11,color:'var(--muted)',whiteSpace:'normal',maxWidth:180}}>{it.model}</div>}</td>
               <td style={{textAlign:'center'}}>{it.fabric}</td>
-              <td style={{textAlign:'center'}}>{it.audience}</td>
+              <td style={{textAlign:'center'}}>{audText(it)}</td>
+              <td style={{textAlign:'center',color:it.color?'inherit':'var(--muted)'}}>{it.color||'—'}</td>
               <td style={{textAlign:'center',color:it.collar?'inherit':'var(--muted)'}}>{it.collar||'—'}</td>
               {SIZES.map(z=><td key={z} className="num" style={{textAlign:'center',color:Number(it[z.toLowerCase()])>0?'inherit':'var(--muted)'}}>{Number(it[z.toLowerCase()])||'—'}</td>)}
               <td className="num" style={{textAlign:'center',fontWeight:600}}>{qtyOf(it)}</td>
-              <td className="num" style={{textAlign:'center',color:'var(--muted)'}}>{fmt(it.price)}</td>
-              <td className="num" style={{textAlign:'right',fontWeight:700,color:'var(--accent)'}}>{fmt(qtyOf(it)*(Number(it.price)||0))}</td>
+              {prices&&<td style={{textAlign:'center'}}>
+                {onPrice
+                  ?<input className="num" type="number" min="0" step="0.01" value={it.price}
+                     onChange={e=>onPrice(it.id,e.target.value)} style={{width:76,textAlign:'center',padding:'4px 6px',fontSize:12}}/>
+                  :<span className="num" style={{color:'var(--muted)'}}>{fmt(it.price)}</span>}
+              </td>}
+              {prices&&<td className="num" style={{textAlign:'right',fontWeight:700,color:'var(--accent)'}}>{fmt(qtyOf(it)*(Number(it.price)||0))}</td>}
             </tr>)}
           </tbody>
         </table>
       </div>
 
+      {rows.some(it=>(it.roster||[]).length>0)&&<div style={{paddingTop:16}}>
+        <div className="lbl">Nombres y números</div>
+        <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:12}}>
+          {rows.filter(it=>(it.roster||[]).length>0).map(it=>
+            <div key={it.id}>
+              <div style={{fontSize:12,fontWeight:600,marginBottom:4}}>{it.name} · {it.audience}
+                <span style={{color:'var(--muted)',fontWeight:400}}> — {it.roster.length} jugadores</span></div>
+              <div className="tbl-scroll">
+                <table><thead><tr><th style={{width:44}}>#</th><th style={{textAlign:'left'}}>Nombre</th><th style={{width:54}}>Talla</th></tr></thead>
+                  <tbody>{it.roster.map(r=><tr key={r.id}>
+                    <td className="num" style={{textAlign:'center'}}>{r.num||'—'}</td>
+                    <td>{r.name||'—'}</td>
+                    <td style={{textAlign:'center',textTransform:'uppercase'}}>{r.size}</td>
+                  </tr>)}</tbody></table>
+              </div>
+            </div>)}
+        </div>
+      </div>}
+
+      {q.items.some(it=>it.notes)&&<div style={{paddingTop:14}}>
+        <div className="lbl">Detalles de cada pieza</div>
+        <div className="grid" style={{gap:7}}>
+          {q.items.filter(it=>it.notes).map(it=>
+            <div key={it.id} className="note" style={{background:'var(--surface-2)'}}>
+              <strong>{it.name}:</strong> {it.notes}</div>)}
+        </div>
+      </div>}
+
+      {q.notes&&<div style={{paddingTop:14}}>
+        <div className="lbl">Comentarios generales</div>
+        <div className="note" style={{background:'var(--surface-2)'}}>{q.notes}</div>
+      </div>}
+
       <div style={{display:'flex',justifyContent:'flex-end',paddingTop:14}}>
         <div style={{minWidth:230}}>
-          <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,color:'var(--muted)',paddingBottom:6,borderBottom:'1px solid var(--line)'}}>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,color:'var(--muted)',paddingBottom:6,borderBottom:prices?'1px solid var(--line)':'none'}}>
             <span>Total de piezas</span><span className="num" style={{fontWeight:600,color:'var(--fg)'}}>{q.items.reduce((s,i)=>s+qtyOf(i),0)}</span></div>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',paddingTop:9}}>
+          {prices&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',paddingTop:9}}>
             <span style={{fontWeight:600}}>Total general</span>
-            <span className="num display" style={{color:'var(--accent)',fontSize:20,fontWeight:700}}>{fmt(grandOf(q.items))}</span></div>
+            <span className="num display" style={{color:'var(--accent)',fontSize:20,fontWeight:700}}>{fmt(grandOf(q.items))}</span></div>}
         </div>
       </div>
 
       {imgs.length>0&&<div style={{paddingTop:16}}>
         <div className="lbl">Diseños y logos</div>
         <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-          {imgs.map((im,i)=><figure key={i} style={{width:116}}>
-            <img className="thumb" style={{height:92}} src={im.src} alt={im.label||im.from}/>
-            <figcaption style={{fontSize:10.5,color:'var(--muted)',marginTop:4}}>{im.label||im.from}</figcaption>
-          </figure>)}
+          {imgs.map((im,i)=>im.src
+            ?<figure key={i} style={{width:116}}>
+              <img className="thumb" style={{height:92}} src={im.src} alt={im.label||im.from}/>
+              <figcaption style={{fontSize:10.5,color:'var(--muted)',marginTop:4}}>{im.label||im.from}</figcaption>
+            </figure>
+            :<a key={i} href={im.url||'#'} target="_blank" rel="noopener" className="btn"
+               style={{fontSize:12,textDecoration:'none',opacity:im.url?1:.5}}>
+              📎 {im.label||im.from||'Diseño'}
+            </a>)}
         </div>
+        {imgs.some(im=>!im.src)&&<p style={{fontSize:11,color:'var(--muted)',marginTop:6}}>
+          Los archivos están en Drive, en la carpeta AE Uniform - Disenos.</p>}
       </div>}
 
       <div className="note" style={{background:'var(--surface-2)',color:'var(--muted)',marginTop:16}}>
-        <strong style={{color:'var(--fg)'}}>Condiciones:</strong> Precios por unidad · Cotización válida 30 días · No incluye IVU
+        {prices
+          ?<React.Fragment><strong style={{color:'var(--fg)'}}>Condiciones:</strong> Precios por unidad · Cotización válida 30 días · No incluye IVU</React.Fragment>
+          :<React.Fragment><strong style={{color:'var(--fg)'}}>Nota:</strong> Esta es una solicitud, no una factura. Al recibirla te enviamos la cotización con los costos finales.</React.Fragment>}
       </div>
     </Card>
+    {children}
   </div>;
+}
+
+/* ══════════ ENVIAR COTIZACIÓN FINAL AL CLIENTE ══════════ */
+function SendFinal({q,onSent}){
+  const [msg,setMsg]=useState('');
+  const [files,setFiles]=useState([]);
+  const [state,setState]=useState('idle');
+  const ref=useRef();
+  const go=async()=>{
+    setState('sending');
+    try{
+      const res=await post({action:'final',quoteId:q.id,email:q.email,message:msg,
+        items:flatItems(q.items).map(it=>({id:it.id,price:Number(it.price)||0})),
+        designs:files.map(f=>({label:f.label,src:f.src}))});
+      if(res&&res.success){setState('sent');onSent&&onSent();}
+      else setState('error');
+    }catch(e){setState('error');}
+  };
+  return <Card>
+    <h3 className="display" style={{fontSize:15,fontWeight:700,marginBottom:4}}>Enviar cotización al cliente</h3>
+    <p style={{fontSize:12.5,color:'var(--muted)',marginBottom:13}}>
+      Va a {q.email||'—'} con los precios de la tabla de arriba{q.sentAt?' · ya enviada una vez':''}.
+    </p>
+
+    <label className="lbl" htmlFor={'m'+q.id}>Mensaje</label>
+    <textarea id={'m'+q.id} rows="3" value={msg} onChange={e=>setMsg(e.target.value)} style={{resize:'vertical',marginBottom:13}}
+      placeholder="Ej: Adjunto el diseño que preparamos. El precio incluye bordado al frente. Tiempo de producción: 3 semanas desde la aprobación."/>
+
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:6}}>
+      <div className="lbl" style={{margin:0}}>Diseño que preparamos{files.length?' · '+files.length:''}</div>
+      <Btn cls="btn-accent" style={{padding:'4px 10px',fontSize:12}} onClick={()=>ref.current&&ref.current.click()}>+ Adjuntar</Btn>
+    </div>
+    <input ref={ref} type="file" accept="image/*" multiple hidden
+      onChange={e=>{const fs=Array.from(e.target.files);let acc=files.slice();
+        fs.forEach(f=>shrink(f,src=>{acc=acc.concat([{id:uid(),src,label:f.name.replace(/\.[^.]+$/,'')}]);setFiles(acc);}));e.target.value='';}}/>
+    {files.length>0&&<div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(118px,1fr))',marginBottom:13}}>
+      {files.map(f=><div key={f.id} style={{position:'relative'}}>
+        <img className="thumb" src={f.src} alt={f.label}/>
+        <button className="x" onClick={()=>setFiles(files.filter(x=>x.id!==f.id))} aria-label="Quitar">×</button>
+      </div>)}
+    </div>}
+
+    {state==='error'&&<div className="note" style={{background:'var(--danger-soft)',color:'var(--danger)',marginBottom:11}}>
+      No se pudo enviar. Revisa la conexión y vuelve a intentarlo.</div>}
+    {state==='sent'&&<div className="note" style={{background:'var(--ok-soft)',color:'var(--ok)',marginBottom:11}}>
+      Enviada a {q.email}. Te llegó copia a {BIZ_EMAIL}.</div>}
+
+    <Btn cls="btn-primary" disabled={state==='sending'||!q.email} onClick={go}>
+      {state==='sending'?'Enviando…':state==='sent'?'Enviar de nuevo':'Enviar cotización'}
+    </Btn>
+  </Card>;
 }
 
 /* ══════════ CONFIRMACIÓN ══════════ */
@@ -580,33 +866,39 @@ function Board({rows,setRows,loading,onRefresh,onOpen,offline}){
 }
 
 /* ══════════ PANEL: LOGÍSTICA ══════════ */
-function Orders({orders,onNew,onEdit,onDel,onOpen}){
+function Orders({orders,onNew,onEdit,onDel,onOpen,onStatus,loading}){
   return <div className="grid" style={{gap:12}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:10,flexWrap:'wrap'}}>
       <div>
         <h1 className="display" style={{fontSize:21,fontWeight:700}}>Órdenes de producción</h1>
-        <p style={{fontSize:12.5,color:'var(--muted)',marginTop:2}}>Fichas técnicas para la fábrica</p>
+        <p style={{fontSize:12.5,color:'var(--muted)',marginTop:2}}>
+          {loading?'Cargando…':'Fichas técnicas para la fábrica · '+orders.length}</p>
       </div>
       <Btn cls="btn-accent" onClick={onNew}>+ Nueva orden</Btn>
     </div>
     {orders.length===0
       ?<Card style={{textAlign:'center',padding:'34px 22px'}}><p style={{fontSize:14}}>No hay órdenes creadas</p>
-        <p style={{fontSize:12.5,color:'var(--muted)',marginTop:6}}>Crea una cuando el cliente acepte su cotización.</p></Card>
-      :<div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(245px,1fr))'}}>
-        {orders.map(o=><Card key={o.id} style={{display:'flex',flexDirection:'column',gap:10}}>
-          <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
-            <div style={{minWidth:0}}><div style={{fontWeight:600}}>{o.client||'Sin cliente'}</div>
-              <div className="num" style={{fontSize:11.5,color:'var(--muted)'}}>{o.orderNum}</div></div>
-            <span className="pill" style={{background:'var(--surface-2)',color:'var(--muted)',whiteSpace:'nowrap',height:'fit-content'}}>{dShort(o.date)}</span>
-          </div>
-          {o.deliveryDate&&<span className="pill" style={{background:'var(--accent-soft)',color:'var(--accent)',width:'fit-content'}}>Entrega {dShort(o.deliveryDate)}</span>}
-          <div style={{fontSize:12.5,color:'var(--muted)'}}>{o.items.length} artículo{o.items.length!==1?'s':''} · {o.items.reduce((s,i)=>s+qtyOf(i),0)} piezas</div>
-          <div style={{display:'flex',gap:6}}>
-            <Btn cls="btn-accent" style={{flex:1,justifyContent:'center'}} onClick={()=>onOpen(o)}>Ficha</Btn>
-            <Btn style={{flex:1,justifyContent:'center'}} onClick={()=>onEdit(o)}>Editar</Btn>
-            <Btn style={{color:'var(--muted)',padding:'7px 10px'}} onClick={()=>onDel(o.id)} aria-label="Eliminar">×</Btn>
-          </div>
-        </Card>)}
+        <p style={{fontSize:12.5,color:'var(--muted)',marginTop:6}}>Ábrete una cotización aceptada y usa "Crear orden de producción".</p></Card>
+      :<div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(258px,1fr))'}}>
+        {orders.map(o=>{const s=ostat(o.status);return(
+          <Card key={o.id} style={{display:'flex',flexDirection:'column',gap:10,borderLeft:'3px solid '+s.c}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
+              <div style={{minWidth:0}}><div style={{fontWeight:600}}>{o.client||'Sin cliente'}</div>
+                <div className="num" style={{fontSize:11.5,color:'var(--muted)'}}>{o.orderNum}{o.quoteNum?' · '+o.quoteNum:''}</div></div>
+              <span className="pill" style={{background:'var(--surface-2)',color:'var(--muted)',whiteSpace:'nowrap',height:'fit-content'}}>{dShort(o.date)}</span>
+            </div>
+            <select value={o.status||'pendiente'} onChange={e=>onStatus(o.id,e.target.value)}
+              style={{background:s.bg,color:s.c,fontWeight:600,fontSize:12,borderColor:'transparent',width:'auto'}}>
+              {OSTATUSES.map(x=><option key={x.key} value={x.key}>{x.label}</option>)}
+            </select>
+            {o.deliveryDate&&<span className="pill" style={{background:'var(--accent-soft)',color:'var(--accent)',width:'fit-content'}}>Entrega {dShort(o.deliveryDate)}</span>}
+            <div style={{fontSize:12.5,color:'var(--muted)'}}>{o.items.length} artículo{o.items.length!==1?'s':''} · {o.items.reduce((s2,i)=>s2+qtyOf(i),0)} piezas</div>
+            <div style={{display:'flex',gap:6}}>
+              <Btn cls="btn-accent" style={{flex:1,justifyContent:'center'}} onClick={()=>onOpen(o)}>Ficha</Btn>
+              <Btn style={{flex:1,justifyContent:'center'}} onClick={()=>onEdit(o)}>Editar</Btn>
+              <Btn style={{color:'var(--muted)',padding:'7px 10px'}} onClick={()=>onDel(o.id)} aria-label="Eliminar">×</Btn>
+            </div>
+          </Card>);})}
       </div>}
   </div>;
 }
@@ -622,6 +914,7 @@ function OrderForm({o,setO,onSave,onCancel}){
     <Card><div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))'}}>
       <Field label="Cliente"><input value={o.client} onChange={e=>set('client',e.target.value)}/></Field>
       <Field label="No. de orden"><input value={o.orderNum} onChange={e=>set('orderNum',e.target.value)}/></Field>
+      <Field label="Cotización"><input value={o.quoteNum||''} onChange={e=>set('quoteNum',e.target.value)} placeholder="COT-…"/></Field>
       <Field label="Fecha"><input type="date" value={o.date} onChange={e=>set('date',e.target.value)}/></Field>
       <Field label="Entrega"><input type="date" value={o.deliveryDate} onChange={e=>set('deliveryDate',e.target.value)}/></Field>
     </div></Card>
@@ -641,13 +934,24 @@ function OrderForm({o,setO,onSave,onCancel}){
       </div>
       <div style={{marginBottom:11}}>
         <div className="lbl">Cantidades por talla</div>
-        <SizeRow item={it} onSet={(f,v)=>setI(it.id,f,v)} total={0}/>
+        <SizeRow item={it} onSet={(f,v)=>setI(it.id,f,v)} total={null}/>
       </div>
       <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',marginBottom:11}}>
         <Field label="Ubicación del logo"><input value={it.placement} onChange={e=>setI(it.id,'placement',e.target.value)}/></Field>
         <Field label="Tamaño del logo"><input value={it.placementSize} onChange={e=>setI(it.id,'placementSize',e.target.value)}/></Field>
       </div>
       <Field label="Instrucciones especiales"><textarea rows="2" value={it.notes} onChange={e=>setI(it.id,'notes',e.target.value)} style={{resize:'vertical'}}/></Field>
+      {(it.roster||[]).length>0&&<div style={{marginTop:11}}>
+        <div className="lbl">Nombres y números · {it.roster.length}</div>
+        <div className="tbl-scroll">
+          <table><thead><tr><th style={{width:44}}>#</th><th style={{textAlign:'left'}}>Nombre</th><th style={{width:54}}>Talla</th></tr></thead>
+            <tbody>{it.roster.map(r=><tr key={r.id}>
+              <td className="num" style={{textAlign:'center'}}>{r.num||'—'}</td>
+              <td>{r.name||'—'}</td>
+              <td style={{textAlign:'center',textTransform:'uppercase'}}>{r.size}</td>
+            </tr>)}</tbody></table>
+        </div>
+      </div>}
     </Card>)}
     <button className="drop" style={{padding:11,fontSize:12.5,cursor:'pointer',width:'100%'}}
       onClick={()=>setO(p=>Object.assign({},p,{items:p.items.concat([newOI()])}))}>+ Agregar artículo</button>
@@ -694,6 +998,17 @@ function OrderView({o,onBack,onExport}){
               {it.placementSize&&<div><div className="lbl">Tamaño</div><div style={{fontSize:12.5}}>{it.placementSize}</div></div>}
             </div>
             {it.notes&&<div className="note" style={{background:'var(--surface-2)',marginTop:9}}>{it.notes}</div>}
+            {(it.roster||[]).length>0&&<div style={{marginTop:9}}>
+              <div className="lbl">Nombres y números · {it.roster.length}</div>
+              <div className="tbl-scroll">
+                <table><thead><tr><th style={{width:44}}>#</th><th style={{textAlign:'left'}}>Nombre</th><th style={{width:54}}>Talla</th></tr></thead>
+                  <tbody>{it.roster.map(r=><tr key={r.id}>
+                    <td className="num" style={{textAlign:'center'}}>{r.num||'—'}</td>
+                    <td>{r.name||'—'}</td>
+                    <td style={{textAlign:'center',textTransform:'uppercase'}}>{r.size}</td>
+                  </tr>)}</tbody></table>
+              </div>
+            </div>}
           </div>
         </div>
       </div>)}
@@ -725,7 +1040,7 @@ function Shell({children,nav,sub}){
 }
 
 /* ══════════ APP ══════════ */
-const blank=()=>({id:qid(),quoteNum:nextNum(),client:'',email:'',phone:'',date:today(),deliveryDate:'',items:[newItem()],status:'enviada'});
+const blank=()=>({id:qid(),quoteNum:nextNum(),client:'',email:'',phone:'',date:today(),deliveryDate:'',needBy:'',notes:'',items:[newItem()],status:'enviada'});
 
 function App(){
   const [mode,setMode]=useState('client');      // client | login | admin
@@ -750,12 +1065,32 @@ function App(){
     setLoading(true);setOffline(false);
     try{
       const res=await getList();
-      if(res&&res.success&&Array.isArray(res.quotes)){setRows(res.quotes);lsSave(res.quotes);}
+      if(res&&res.success){
+        if(Array.isArray(res.quotes)){setRows(res.quotes);lsSave(res.quotes);}
+        if(Array.isArray(res.orders))setOrders(res.orders);
+      }
       else throw new Error('sin datos');
     }catch(e){setOffline(true);setRows(lsLoad());}
     setLoading(false);
   };
   useEffect(()=>{if(mode==='admin')refresh();},[mode]);
+
+  const saveOrder=async()=>{
+    if(!ord)return;
+    setOrders(p=>{const i=p.findIndex(x=>x.id===ord.id);if(i>=0){const n=p.slice();n[i]=ord;return n;}return[ord].concat(p);});
+    setSub(null);setOrd(null);
+    try{await post({action:'orderSave',order:ord});}catch(e){}
+    refresh();
+  };
+  const delOrder=async(id)=>{
+    setOrders(p=>p.filter(x=>x.id!==id));
+    try{await post({action:'orderDelete',orderId:id});}catch(e){}
+  };
+  const setOrderStatus=async(id,s)=>{
+    setOrders(p=>p.map(x=>x.id===id?Object.assign({},x,{status:s}):x));
+    try{await post({action:'orderStatus',orderId:id,status:s});}catch(e){}
+  };
+  const makeOrder=q=>{setOrd(orderFromQuote(q));setOpen(null);setTab('orders');setSub('edit');};
 
   const submit=async()=>{
     if(!q.client.trim()||!q.email.trim()){setStep('form');setTimeout(()=>{const el=document.getElementById(q.client.trim()?'f-email':'f-client');if(el)el.focus();},60);return;}
@@ -763,8 +1098,13 @@ function App(){
     const entry=Object.assign({},q,{submittedAt:new Date().toISOString(),status:'enviada'});
     const local=lsLoad().concat([entry]);lsSave(local);setRows(local);
     try{
-      const res=await post({action:'create',quote:entry});
-      if(res&&res.success){setSend('sent');setTimeout(()=>setStep('done'),450);}
+      const wire=Object.assign({},entry,{items:flatItems(entry.items).map(it=>Object.assign({},it,{
+        name:it.model?it.name+' ('+it.model+')':it.name}))});
+      const res=await post({action:'create',quote:wire});
+      if(res&&res.success){
+        if(res.quoteNum)setQ(p=>Object.assign({},p,{quoteNum:res.quoteNum}));
+        setSend('sent');setTimeout(()=>setStep('done'),450);
+      }
       else setSend('error');
     }catch(e){setSend('error');}
   };
@@ -774,8 +1114,8 @@ function App(){
   if(mode==='client')return <Shell sub="Solicitud de cotización"
     nav={<Btn style={{color:'var(--muted)',fontSize:12,padding:'5px 11px'}} onClick={()=>setMode('login')}>Acceso interno</Btn>}>
     {step==='form'&&<QuoteForm q={q} setQ={setQ} setItem={setItem} addItem={addItem} delItem={delItem}
-      onPreview={()=>setStep('view')} onExport={()=>quoteDoc(q)} admin={false}/>}
-    {step==='view'&&<QuoteView q={q} onBack={()=>setStep('form')} onExport={()=>quoteDoc(q)} onSubmit={submit} state={send}/>}
+      onPreview={()=>setStep('view')} onExport={()=>quoteDoc(q,false)} admin={false}/>}
+    {step==='view'&&<QuoteView q={q} onBack={()=>setStep('form')} onExport={()=>quoteDoc(q,false)} onSubmit={submit} state={send}/>}
     {step==='done'&&<Done num={q.quoteNum} onNew={reset}/>}
   </Shell>;
 
@@ -790,20 +1130,30 @@ function App(){
     </React.Fragment>}>
 
     {tab==='board'&&!open&&<Board rows={rows} setRows={setRows} loading={loading} onRefresh={refresh} onOpen={setOpen} offline={offline}/>}
-    {tab==='board'&&open&&<QuoteView q={open} readOnly onBack={()=>setOpen(null)} onExport={()=>quoteDoc(open)} state="sent"/>}
+    {tab==='board'&&open&&<QuoteView q={open} readOnly prices onBack={()=>setOpen(null)}
+      onExport={()=>quoteDoc(open,true)} state="sent"
+      onPrice={(id,v)=>setOpen(o=>Object.assign({},o,{items:o.items.map(it=>it.id===id?Object.assign({},it,{price:v}):it)}))}>
+      <SendFinal q={open} onSent={refresh}/>
+      <Card style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div>
+          <div style={{fontWeight:600,fontSize:14}}>¿Ya aceptó el cliente?</div>
+          <div style={{fontSize:12.5,color:'var(--muted)',marginTop:2}}>Pasa tallas, telas, colores y jugadores a una ficha de fábrica.</div>
+        </div>
+        <Btn cls="btn-primary" onClick={()=>makeOrder(open)}>Crear orden de producción</Btn>
+      </Card>
+    </QuoteView>}
 
     {tab==='quote'&&step!=='view'&&<QuoteForm q={q} setQ={setQ} setItem={setItem} addItem={addItem} delItem={delItem}
-      onPreview={()=>setStep('view')} onExport={()=>quoteDoc(q)} admin/>}
-    {tab==='quote'&&step==='view'&&<QuoteView q={q} onBack={()=>setStep('form')} onExport={()=>quoteDoc(q)} onSubmit={submit} state={send}/>}
+      onPreview={()=>setStep('view')} onExport={()=>quoteDoc(q,true)} admin/>}
+    {tab==='quote'&&step==='view'&&<QuoteView q={q} prices onBack={()=>setStep('form')} onExport={()=>quoteDoc(q,true)} onSubmit={submit} state={send}/>}
 
-    {tab==='orders'&&!sub&&<Orders orders={orders}
+    {tab==='orders'&&!sub&&<Orders orders={orders} loading={loading}
       onNew={()=>{setOrd(newOrd());setSub('edit');}}
       onEdit={o=>{setOrd(JSON.parse(JSON.stringify(o)));setSub('edit');}}
-      onDel={id=>setOrders(p=>p.filter(x=>x.id!==id))}
+      onDel={delOrder} onStatus={setOrderStatus}
       onOpen={o=>{setOrd(o);setSub('view');}}/>}
     {tab==='orders'&&sub==='edit'&&ord&&<OrderForm o={ord} setO={setOrd}
-      onSave={()=>{setOrders(p=>{const i=p.findIndex(x=>x.id===ord.id);if(i>=0){const n=p.slice();n[i]=ord;return n;}return p.concat([ord]);});setSub(null);setOrd(null);}}
-      onCancel={()=>{setSub(null);setOrd(null);}}/>}
+      onSave={saveOrder} onCancel={()=>{setSub(null);setOrd(null);}}/>}
     {tab==='orders'&&sub==='view'&&ord&&<OrderView o={ord} onBack={()=>setSub(null)} onExport={()=>orderDoc(ord)}/>}
   </Shell>;
 }
