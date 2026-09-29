@@ -93,7 +93,7 @@ const BIZ_EMAIL='aeuniform25@gmail.com';
 const BIZ_PHONE='787-249-0678';
 const ADMIN_PIN='AE2026';
 const SHEET_URL='https://script.google.com/macros/s/AKfycbwg016t-v4V7blG4bhi9NM3V8YgV8drDL3Cxk_xVmwncEnd_3TAmwyTM-Ahi5KXH-qF_g/exec';
-const NEEDS_BACKEND='3.0';   // versión del Apps Script que esta página espera
+const NEEDS_BACKEND='3.1';   // versión del Apps Script que esta página espera
 
 /* ══════════ CATÁLOGOS ══════════ */
 const SIZES=['XS','S','M','L','XL','XXL'];
@@ -705,6 +705,8 @@ function SendFinal({q,onSent}){
   const [files,setFiles]=useState([]);
   const [state,setState]=useState('idle');
   const [err,setErr]=useState('');
+  const [deliv,setDeliv]=useState('');
+  const [re,setRe]=useState('');
   const ref=useRef();
   const go=async()=>{
     setState('sending');
@@ -712,7 +714,7 @@ function SendFinal({q,onSent}){
       const res=await post({action:'final',quoteId:q.id,email:q.email,message:msg,
         items:flatItems(q.items).map(it=>({id:it.id,price:Number(it.price)||0})),
         designs:files.map(f=>({label:f.label,src:f.src}))});
-      if(res&&res.success){setState('sent');onSent&&onSent();}
+      if(res&&res.success){setState('sent');setDeliv(res.entrega||'');onSent&&onSent();}
       else {setState('error');setErr((res&&res.error)||'');}
     }catch(e){setState('error');setErr('');}
   };
@@ -743,11 +745,19 @@ function SendFinal({q,onSent}){
     {state==='error'&&<div className="note" style={{background:'var(--danger-soft)',color:'var(--danger)',marginBottom:11}}>
       No se pudo enviar.{err?' '+err:''} Si menciona una acción desconocida, el Apps Script está atrasado: pega el código nuevo y vuelve a desplegar.</div>}
     {state==='sent'&&<div className="note" style={{background:'var(--ok-soft)',color:'var(--ok)',marginBottom:11}}>
-      Enviada a {q.email}. Te llegó copia a {BIZ_EMAIL}.</div>}
+      {deliv||('Enviada a '+q.email+'. Te llegó copia a '+BIZ_EMAIL+'.')}</div>}
 
-    <Btn cls="btn-primary" disabled={state==='sending'||!q.email} onClick={go}>
-      {state==='sending'?'Enviando…':state==='sent'?'Enviar de nuevo':'Enviar cotización'}
-    </Btn>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      <Btn cls="btn-primary" disabled={state==='sending'||!q.email} onClick={go}>
+        {state==='sending'?'Enviando…':state==='sent'?'Enviar de nuevo':'Enviar cotización'}
+      </Btn>
+      <Btn disabled={re==='sending'} onClick={async()=>{
+        setRe('sending');
+        try{const r=await post({action:'resend',quoteId:q.id});setRe(r&&r.entrega?r.entrega:'sin respuesta');}
+        catch(e){setRe('no se pudo conectar');}
+      }}>{re==='sending'?'Reenviando…':'Reenviar confirmación de recibo'}</Btn>
+    </div>
+    {re&&re!=='sending'&&<p style={{fontSize:11.5,color:'var(--muted)',marginTop:8}}>{re}</p>}
   </Card>;
 }
 
@@ -813,6 +823,8 @@ function Board({rows,setRows,loading,onRefresh,onOpen,offline,stale}){
         <p style={{fontSize:12.5,color:'var(--muted)',marginTop:2}}>
           {loading?'Cargando desde Google Sheets…':active.length+' activa'+(active.length!==1?'s':'')+
             (filed.length?' · '+filed.length+' archivada'+(filed.length!==1?'s':''):'')}</p>
+        <p className="num" style={{fontSize:10.5,color:'var(--muted)',opacity:.7,marginTop:3}}>
+          Backend …{SHEET_URL.replace('/exec','').slice(-8)} · página v{NEEDS_BACKEND}</p>
       </div>
       <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
         <button className="tab" aria-selected={view==='activas'} onClick={()=>setView('activas')}>Activas</button>
