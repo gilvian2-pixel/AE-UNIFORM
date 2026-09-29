@@ -93,6 +93,7 @@ const BIZ_EMAIL='aeuniform25@gmail.com';
 const BIZ_PHONE='787-249-0678';
 const ADMIN_PIN='AE2026';
 const SHEET_URL='https://script.google.com/macros/s/AKfycbwawEWmygkex_KXOSu_OMRfcoTGuQU8vgrS7NKszXJ3SIzbT4BAFzZ4CBN74XR6OLCEhg/exec';
+const NEEDS_BACKEND='3.0';   // versión del Apps Script que esta página espera
 
 /* ══════════ CATÁLOGOS ══════════ */
 const SIZES=['XS','S','M','L','XL','XXL'];
@@ -108,7 +109,9 @@ const STATUSES=[
   {key:'deposito', label:'Depósito cobrado',  c:'var(--warn)',   bg:'var(--warn-soft)'},
   {key:'entregado',label:'Entregado',         c:'var(--ok)',     bg:'var(--ok-soft)'},
   {key:'saldo',    label:'Saldo cobrado',     c:'var(--fg)',     bg:'var(--surface-2)'},
+  {key:'archivada',label:'Archivada',         c:'var(--muted)',  bg:'var(--surface-2)'},
 ];
+const PIPE=STATUSES.filter(s=>s.key!=='archivada');
 const stat=k=>STATUSES.find(s=>s.key===k)||STATUSES[0];
 const OSTATUSES=[
   {key:'pendiente', label:'Pendiente',   c:'var(--muted)',  bg:'var(--surface-2)'},
@@ -701,6 +704,7 @@ function SendFinal({q,onSent}){
   const [msg,setMsg]=useState('');
   const [files,setFiles]=useState([]);
   const [state,setState]=useState('idle');
+  const [err,setErr]=useState('');
   const ref=useRef();
   const go=async()=>{
     setState('sending');
@@ -709,8 +713,8 @@ function SendFinal({q,onSent}){
         items:flatItems(q.items).map(it=>({id:it.id,price:Number(it.price)||0})),
         designs:files.map(f=>({label:f.label,src:f.src}))});
       if(res&&res.success){setState('sent');onSent&&onSent();}
-      else setState('error');
-    }catch(e){setState('error');}
+      else {setState('error');setErr((res&&res.error)||'');}
+    }catch(e){setState('error');setErr('');}
   };
   return <Card>
     <h3 className="display" style={{fontSize:15,fontWeight:700,marginBottom:4}}>Enviar cotización al cliente</h3>
@@ -737,7 +741,7 @@ function SendFinal({q,onSent}){
     </div>}
 
     {state==='error'&&<div className="note" style={{background:'var(--danger-soft)',color:'var(--danger)',marginBottom:11}}>
-      No se pudo enviar. Revisa la conexión y vuelve a intentarlo.</div>}
+      No se pudo enviar.{err?' '+err:''} Si menciona una acción desconocida, el Apps Script está atrasado: pega el código nuevo y vuelve a desplegar.</div>}
     {state==='sent'&&<div className="note" style={{background:'var(--ok-soft)',color:'var(--ok)',marginBottom:11}}>
       Enviada a {q.email}. Te llegó copia a {BIZ_EMAIL}.</div>}
 
@@ -784,61 +788,94 @@ function Login({onOk,onCancel}){
 }
 
 /* ══════════ PANEL: COTIZACIONES ══════════ */
-function Board({rows,setRows,loading,onRefresh,onOpen,offline}){
-  const setStatus=async(id,s)=>{
-    const next=rows.map(r=>r.id===id?Object.assign({},r,{status:s}):r);
+function Board({rows,setRows,loading,onRefresh,onOpen,offline,stale}){
+  const [view,setView]=useState('activas');
+  const upd=async(id,status)=>{
+    const next=rows.map(r=>r.id===id?Object.assign({},r,{status,archivedAt:status==='archivada'?today():r.archivedAt}):r);
     setRows(next);lsSave(next);
-    try{await post({action:'status',quoteId:id,status:s});}catch(e){}
+    try{await post({action:'status',quoteId:id,status});}catch(e){}
   };
-  const totals={};STATUSES.forEach(s=>{totals[s.key]=rows.filter(r=>r.status===s.key).reduce((t,r)=>t+grandOf(r.items),0);});
-  const sum=ks=>ks.reduce((t,k)=>t+totals[k],0);
+  const note=async(id,text)=>{
+    const next=rows.map(r=>r.id===id?Object.assign({},r,{followUp:text}):r);
+    setRows(next);lsSave(next);
+    try{await post({action:'note',quoteId:id,note:text});}catch(e){}
+  };
+  const active=rows.filter(r=>r.status!=='archivada');
+  const filed=rows.filter(r=>r.status==='archivada');
+  const list=view==='activas'?active:filed;
+  const totals={};PIPE.forEach(s=>{totals[s.key]=active.filter(r=>r.status===s.key).reduce((t,r)=>t+grandOf(r.items),0);});
+  const sum=ks=>ks.reduce((t,k)=>t+(totals[k]||0),0);
 
   return <div className="grid" style={{gap:12}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:10,flexWrap:'wrap'}}>
       <div>
         <h1 className="display" style={{fontSize:21,fontWeight:700}}>Cotizaciones</h1>
         <p style={{fontSize:12.5,color:'var(--muted)',marginTop:2}}>
-          {loading?'Cargando desde Google Sheets…':rows.length+(rows.length===1?' cotización registrada':' cotizaciones registradas')}</p>
+          {loading?'Cargando desde Google Sheets…':active.length+' activa'+(active.length!==1?'s':'')+
+            (filed.length?' · '+filed.length+' archivada'+(filed.length!==1?'s':''):'')}</p>
       </div>
-      <Btn onClick={onRefresh} disabled={loading}>↻ Actualizar</Btn>
+      <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+        <button className="tab" aria-selected={view==='activas'} onClick={()=>setView('activas')}>Activas</button>
+        <button className="tab" aria-selected={view==='archivadas'} onClick={()=>setView('archivadas')}>
+          Archivadas{filed.length>0?' · '+filed.length:''}</button>
+        <Btn onClick={onRefresh} disabled={loading}>↻ Actualizar</Btn>
+      </div>
     </div>
 
     {offline&&<div className="note" style={{background:'var(--warn-soft)',color:'var(--warn)',border:'1px solid currentColor'}}>
       No se pudo leer Google Sheets. Estás viendo el respaldo guardado en este navegador.
     </div>}
 
-    <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(152px,1fr))',gap:8}}>
-      {STATUSES.map(s=>{const n=rows.filter(r=>r.status===s.key).length;return(
+    {stale&&<div className="note" style={{background:'var(--danger-soft)',color:'var(--danger)',border:'1px solid currentColor'}}>
+      <strong>El Apps Script está atrasado</strong> (tiene la versión {stale}, esta página necesita la {NEEDS_BACKEND}).
+      Los correos al cliente y el envío de la cotización final no van a funcionar hasta que pegues el código nuevo
+      y hagas <strong>Deploy → Manage deployments → ✏️ → New version → Deploy</strong>.
+    </div>}
+
+    {view==='activas'&&<div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(152px,1fr))',gap:8}}>
+      {PIPE.map(s=>{const c=active.filter(r=>r.status===s.key).length;return(
         <div key={s.key} style={{background:s.bg,borderRadius:'var(--r)',padding:'11px 13px',borderLeft:'3px solid '+s.c}}>
           <div style={{fontSize:10,fontWeight:700,letterSpacing:'.05em',textTransform:'uppercase',color:s.c,marginBottom:5}}>{s.label}</div>
-          <div className="num display" style={{fontSize:20,fontWeight:700,color:s.c,lineHeight:1}}>{n}</div>
+          <div className="num display" style={{fontSize:20,fontWeight:700,color:s.c,lineHeight:1}}>{c}</div>
           <div className="num" style={{fontSize:11.5,color:s.c,opacity:.85,marginTop:3}}>{fmt(totals[s.key])}</div>
         </div>);})}
-    </div>
+    </div>}
 
-    {rows.length===0
+    {view==='archivadas'&&filed.length>0&&<div className="note" style={{background:'var(--surface-2)',color:'var(--muted)'}}>
+      Clientes que no cerraron. Anota por qué se cayó y cuándo volver a tocar la puerta.
+    </div>}
+
+    {list.length===0
       ?<Card style={{textAlign:'center',padding:'34px 22px'}}>
-        <p style={{fontSize:14,marginBottom:6}}>Todavía no hay cotizaciones</p>
-        <p style={{fontSize:12.5,color:'var(--muted)'}}>Las solicitudes que sometan los clientes aparecen aquí y llegan a {BIZ_EMAIL}.</p>
+        <p style={{fontSize:14,marginBottom:6}}>{view==='activas'?'No hay cotizaciones activas':'No hay nada archivado'}</p>
+        <p style={{fontSize:12.5,color:'var(--muted)'}}>
+          {view==='activas'
+            ?'Las solicitudes de clientes aparecen aquí y llegan a '+BIZ_EMAIL
+            :'Archiva una cotización cuando el cliente deje de responder.'}</p>
       </Card>
       :<div className="grid" style={{gap:8}}>
-        {rows.map(r=>{const s=stat(r.status);return(
+        {list.map(r=>{const s=stat(r.status);return(
           <Card key={r.id} style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',borderLeft:'3px solid '+s.c}}>
-            <div style={{minWidth:148}}>
-              <label className="lbl" htmlFor={'st'+r.id}>Estado</label>
-              <select id={'st'+r.id} value={r.status} onChange={e=>setStatus(r.id,e.target.value)}
-                style={{background:s.bg,color:s.c,fontWeight:600,fontSize:12,borderColor:'transparent'}}>
-                {STATUSES.map(x=><option key={x.key} value={x.key}>{x.label}</option>)}
-              </select>
-            </div>
+            {view==='activas'
+              ?<div style={{minWidth:148}}>
+                <label className="lbl" htmlFor={'st'+r.id}>Estado</label>
+                <select id={'st'+r.id} value={r.status} onChange={e=>upd(r.id,e.target.value)}
+                  style={{background:s.bg,color:s.c,fontWeight:600,fontSize:12,borderColor:'transparent',width:'auto'}}>
+                  {PIPE.map(x=><option key={x.key} value={x.key}>{x.label}</option>)}
+                </select>
+              </div>
+              :<div style={{minWidth:110}}>
+                <div className="lbl">Archivada</div>
+                <div style={{fontSize:12.5}}>{r.archivedAt?dShort(r.archivedAt):'—'}</div>
+              </div>}
             <div style={{flex:'1 1 170px',minWidth:0}}>
               <div style={{fontWeight:600,fontSize:14.5}}>{r.client||'Sin cliente'}</div>
               <div style={{fontSize:11.5,color:'var(--muted)',overflowWrap:'anywhere'}}>{r.quoteNum} · {dShort(r.date)}{r.email?' · '+r.email:''}</div>
             </div>
-            <div style={{minWidth:92}}>
+            {view==='activas'&&<div style={{minWidth:92}}>
               <div className="lbl">Entrega</div>
               <div className="num" style={{fontSize:12.5,fontWeight:600,color:'var(--accent)'}}>{dShort(r.deliveryDate)}</div>
-            </div>
+            </div>}
             <div style={{minWidth:58,textAlign:'right'}}>
               <div className="lbl">Piezas</div>
               <div className="num" style={{fontSize:13.5,fontWeight:600}}>{r.items.reduce((t,i)=>t+qtyOf(i),0)}</div>
@@ -848,10 +885,18 @@ function Board({rows,setRows,loading,onRefresh,onOpen,offline}){
               <div className="num display" style={{fontSize:15,fontWeight:700,color:'var(--accent)'}}>{fmt(grandOf(r.items))}</div>
             </div>
             <Btn cls="btn-accent" style={{padding:'5px 12px',fontSize:12}} onClick={()=>onOpen(r)}>Ver →</Btn>
+            {view==='activas'
+              ?<Btn style={{padding:'5px 11px',fontSize:12,color:'var(--muted)'}} onClick={()=>upd(r.id,'archivada')}>Archivar</Btn>
+              :<Btn style={{padding:'5px 11px',fontSize:12}} onClick={()=>upd(r.id,'enviada')}>Retomar</Btn>}
+            {view==='archivadas'&&<div style={{flexBasis:'100%',minWidth:0}}>
+              <label className="lbl" htmlFor={'fu'+r.id}>Motivo y seguimiento</label>
+              <input id={'fu'+r.id} defaultValue={r.followUp||''} onBlur={e=>note(r.id,e.target.value)}
+                placeholder="Ej: precio alto, volver a llamar en enero antes de la temporada"/>
+            </div>}
           </Card>);})}
       </div>}
 
-    {rows.length>0&&<div style={{display:'flex',justifyContent:'flex-end'}}>
+    {view==='activas'&&active.length>0&&<div style={{display:'flex',justifyContent:'flex-end'}}>
       <Card style={{minWidth:250}}>
         <div className="lbl">Resumen general</div>
         {[['Total cotizado',sum(['enviada','aceptada','deposito','entregado','saldo']),'var(--muted)'],
@@ -860,6 +905,7 @@ function Board({rows,setRows,loading,onRefresh,onOpen,offline}){
           <div key={r[0]} style={{display:'flex',justifyContent:'space-between',gap:28,fontSize:12.5,marginBottom:6}}>
             <span style={{color:'var(--muted)'}}>{r[0]}</span>
             <span className="num" style={{fontWeight:600,color:r[2]}}>{fmt(r[1])}</span></div>)}
+        <p style={{fontSize:11,color:'var(--muted)',marginTop:4}}>No incluye lo archivado.</p>
       </Card>
     </div>}
   </div>;
@@ -1052,6 +1098,7 @@ function App(){
   const [rows,setRows]=useState(lsLoad);
   const [loading,setLoading]=useState(false);
   const [offline,setOffline]=useState(false);
+  const [stale,setStale]=useState('');
   const [open,setOpen]=useState(null);
   const [orders,setOrders]=useState([]);
   const [ord,setOrd]=useState(null);
@@ -1066,6 +1113,7 @@ function App(){
     try{
       const res=await getList();
       if(res&&res.success){
+        setStale(res.version!==NEEDS_BACKEND?(res.version||'anterior a 3.0'):'');
         if(Array.isArray(res.quotes)){setRows(res.quotes);lsSave(res.quotes);}
         if(Array.isArray(res.orders))setOrders(res.orders);
       }
@@ -1129,7 +1177,7 @@ function App(){
       <Btn style={{color:'var(--muted)',fontSize:12,padding:'5px 11px',marginLeft:4}} onClick={()=>{setMode('client');setTab('board');}}>Salir</Btn>
     </React.Fragment>}>
 
-    {tab==='board'&&!open&&<Board rows={rows} setRows={setRows} loading={loading} onRefresh={refresh} onOpen={setOpen} offline={offline}/>}
+    {tab==='board'&&!open&&<Board rows={rows} setRows={setRows} loading={loading} onRefresh={refresh} onOpen={setOpen} offline={offline} stale={stale}/>}
     {tab==='board'&&open&&<QuoteView q={open} readOnly prices onBack={()=>setOpen(null)}
       onExport={()=>quoteDoc(open,true)} state="sent"
       onPrice={(id,v)=>setOpen(o=>Object.assign({},o,{items:o.items.map(it=>it.id===id?Object.assign({},it,{price:v}):it)}))}>
